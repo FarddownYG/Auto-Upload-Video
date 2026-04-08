@@ -5,10 +5,10 @@ import requests
 from datetime import datetime
 from pathlib import Path
 
-# pip install openai moviepy gtts google-api-python-client google-auth-oauthlib pillow requests
+# pip install moviepy gtts google-api-python-client google-auth-oauthlib pillow requests
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
-OPENAI_API_KEY       = os.environ.get("OPENAI_KEY", "")
+MISTRAL_API_KEY      = os.environ.get("MISTRAL_KEY", "")
 ELEVEN_API_KEY       = os.environ.get("ELEVEN_KEY", "")
 YT_REFRESH_TOKEN     = os.environ.get("YT_REFRESH_TOKEN", "")
 YT_CLIENT_ID         = os.environ.get("YT_CLIENT_ID", "")
@@ -17,73 +17,59 @@ YT_CLIENT_SECRET_STR = os.environ.get("YT_CLIENT_SECRET_STR", "")
 OUTPUT_DIR = Path("output")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-# ─── STEP 0: GENERATE TOPIC VIA AI ───────────────────────────────────────────
-def pick_topic():
-    print("[0/5] Asking AI for best trending topic...")
+# ─── MISTRAL CALL ─────────────────────────────────────────────────────────────
+def call_mistral(prompt, max_tokens=400):
     headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Authorization": f"Bearer {MISTRAL_API_KEY}",
         "Content-Type": "application/json"
     }
-    prompt = """You are a viral YouTube Shorts and TikTok expert.
+    body = {
+        "model": "mistral-small-latest",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens,
+        "temperature": 0.8
+    }
+    r = requests.post("https://api.mistral.ai/v1/chat/completions",
+                      headers=headers, json=body, timeout=30)
+    r.raise_for_status()
+    return r.json()["choices"][0]["message"]["content"].strip().strip('"').strip("'")
+
+# ─── STEP 0: GENERATE TOPIC ───────────────────────────────────────────────────
+def pick_topic():
+    print("[0/5] Asking AI for best trending topic...")
+    topic = call_mistral("""You are a viral YouTube Shorts and TikTok expert.
 Suggest ONE video topic in English that is currently trending and highly monetizable.
 Niche: finance, business, or AI/tech.
 Requirements:
 - High CPM (finance/investing preferred)
 - Trending in 2025
 - Under 60 characters
-- Return ONLY the topic title, nothing else, no quotes."""
-
-    body = {
-        "model": "gpt-3.5-turbo",
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 60,
-        "temperature": 0.9
-    }
-    r = requests.post("https://api.openai.com/v1/chat/completions",
-                      headers=headers, json=body, timeout=30)
-    r.raise_for_status()
-    topic = r.json()["choices"][0]["message"]["content"].strip().strip('"').strip("'")
-    print(f"   Topic chosen: {topic}")
+- Return ONLY the topic title, nothing else, no quotes.""", max_tokens=60)
+    print(f"   Topic: {topic}")
     return topic
 
 # ─── STEP 1: GENERATE SCRIPT ─────────────────────────────────────────────────
 def generate_script(topic):
-    print(f"[1/5] Generating script...")
-    headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    prompt = f"""Write a YouTube Shorts video script in English about: "{topic}"
+    print("[1/5] Generating script...")
+    script = call_mistral(f"""Write a YouTube Shorts video script in English about: "{topic}"
 
 Rules:
 - Duration: exactly 90 seconds when read aloud (about 220 words)
 - Style: energetic, direct, no fluff, finance/business tone
-- Structure: hook (10s) → 3 key points (60s) → call to action (20s)
+- Structure: hook (10s) then 3 key points (60s) then call to action (20s)
 - Start with a strong statement, no "hey guys"
 - End with: "Subscribe for more money tips every day."
-- Return ONLY the script text, nothing else"""
-
-    body = {
-        "model": "gpt-3.5-turbo",
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 400,
-        "temperature": 0.8
-    }
-    r = requests.post("https://api.openai.com/v1/chat/completions",
-                      headers=headers, json=body, timeout=30)
-    r.raise_for_status()
-    script = r.json()["choices"][0]["message"]["content"].strip()
-    print(f"   Script generated ({len(script)} chars)")
+- Return ONLY the script text, nothing else""", max_tokens=400)
+    print(f"   Script ready ({len(script)} chars)")
     return script
 
 # ─── STEP 2: GENERATE VOICEOVER ──────────────────────────────────────────────
 def generate_voice(script, output_path):
     print("[2/5] Generating voiceover...")
 
-    # Try ElevenLabs first
     if ELEVEN_API_KEY:
         try:
-            voice_id = "21m00Tcm4TlvDq8ikWAM"  # Rachel - clear English voice
+            voice_id = "21m00Tcm4TlvDq8ikWAM"
             headers = {
                 "xi-api-key": ELEVEN_API_KEY,
                 "Content-Type": "application/json"
@@ -106,7 +92,6 @@ def generate_voice(script, output_path):
         except Exception as e:
             print(f"   ElevenLabs error: {e}")
 
-    # Fallback: gTTS (free, unlimited)
     try:
         from gtts import gTTS
         tts = gTTS(text=script, lang="en", slow=False)
@@ -134,7 +119,6 @@ def generate_images(topic, num_images=6):
             if r.status_code == 200:
                 img = Image.open(io.BytesIO(r.content)).convert("RGB")
                 img = img.resize((1280, 720))
-                # Dark overlay for text readability
                 overlay = Image.new("RGBA", img.size, (0, 0, 0, 120))
                 img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
                 path = OUTPUT_DIR / f"img_{i}.jpg"
@@ -168,7 +152,6 @@ def assemble_video(images, audio_path, topic, output_path):
         clips = []
         for i, img_path in enumerate(images):
             img_clip = ImageClip(img_path, duration=clip_duration)
-
             if i == 0:
                 short_title = topic[:50] + "..." if len(topic) > 50 else topic
                 try:
@@ -180,7 +163,6 @@ def assemble_video(images, audio_path, topic, output_path):
                     img_clip = CompositeVideoClip([img_clip, txt])
                 except Exception:
                     pass
-
             clips.append(img_clip)
 
         video = concatenate_videoclips(clips, method="compose")
@@ -289,7 +271,6 @@ def main():
 
     video_id = upload_to_youtube(video_path, topic, script)
 
-    # Cleanup
     for f in OUTPUT_DIR.glob("img_*.jpg"):
         f.unlink()
     for f in [audio_path, video_path]:
