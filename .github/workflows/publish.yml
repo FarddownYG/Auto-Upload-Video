@@ -2,58 +2,35 @@ name: YouTube Auto Publisher
 
 on:
   schedule:
-    - cron: '0 5 * * *'    # 07h00 France (été UTC+2)
-    - cron: '0 10 * * *'   # 12h00 France
-    - cron: '30 15 * * *'  # 17h30 France
-    - cron: '0 18 * * *'   # 20h00 France
-    - cron: '30 20 * * *'  # 22h30 France
-  workflow_dispatch:         # Déclenchement manuel si besoin
+    - cron: '0 5 * * *'
+    - cron: '0 10 * * *'
+    - cron: '30 15 * * *'
+    - cron: '0 18 * * *'
+    - cron: '30 20 * * *'
+  workflow_dispatch:
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install dependencies
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg imagemagick
-          pip install openai moviepy gtts \
+          pip install moviepy gtts \
             google-api-python-client \
             google-auth-oauthlib \
             pillow requests
 
       - name: Run publisher
         env:
-          OPENAI_KEY:          ${{ secrets.OPENAI_KEY }}
+          MISTRAL_KEY:         ${{ secrets.MISTRAL_KEY }}
           ELEVEN_KEY:          ${{ secrets.ELEVEN_KEY }}
           YT_REFRESH_TOKEN:    ${{ secrets.YT_REFRESH_TOKEN }}
           YT_CLIENT_ID:        ${{ secrets.YT_CLIENT_ID }}
           YT_CLIENT_SECRET_STR: ${{ secrets.YT_CLIENT_SECRET_STR }}
         run: python main.py
-
-      - name: Save used topics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: used-topics
-          path: used_topics.json
-          retention-days: 90
-
-      - name: Commit used topics back
-        if: success()
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add used_topics.json || true
-          git diff --staged --quiet || git commit -m "update used topics [skip ci]"
-          git push || true
