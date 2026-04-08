@@ -5,8 +5,6 @@ import requests
 from datetime import datetime
 from pathlib import Path
 
-# pip install moviepy gtts google-api-python-client google-auth-oauthlib pillow requests
-
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
 MISTRAL_API_KEY      = os.environ.get("MISTRAL_KEY", "")
 ELEVEN_API_KEY       = os.environ.get("ELEVEN_KEY", "")
@@ -17,7 +15,7 @@ YT_CLIENT_SECRET_STR = os.environ.get("YT_CLIENT_SECRET_STR", "")
 OUTPUT_DIR = Path("output")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-# ─── MISTRAL CALL ─────────────────────────────────────────────────────────────
+# ─── MISTRAL ──────────────────────────────────────────────────────────────────
 def call_mistral(prompt, max_tokens=400):
     headers = {
         "Authorization": f"Bearer {MISTRAL_API_KEY}",
@@ -34,7 +32,7 @@ def call_mistral(prompt, max_tokens=400):
     r.raise_for_status()
     return r.json()["choices"][0]["message"]["content"].strip().strip('"').strip("'")
 
-# ─── STEP 0: GENERATE TOPIC ───────────────────────────────────────────────────
+# ─── STEP 0: TOPIC ────────────────────────────────────────────────────────────
 def pick_topic():
     print("[0/5] Asking AI for best trending topic...")
     topic = call_mistral("""You are a viral YouTube Shorts and TikTok expert.
@@ -48,7 +46,7 @@ Requirements:
     print(f"   Topic: {topic}")
     return topic
 
-# ─── STEP 1: GENERATE SCRIPT ─────────────────────────────────────────────────
+# ─── STEP 1: SCRIPT ───────────────────────────────────────────────────────────
 def generate_script(topic):
     print("[1/5] Generating script...")
     script = call_mistral(f"""Write a YouTube Shorts video script in English about: "{topic}"
@@ -63,10 +61,9 @@ Rules:
     print(f"   Script ready ({len(script)} chars)")
     return script
 
-# ─── STEP 2: GENERATE VOICEOVER ──────────────────────────────────────────────
+# ─── STEP 2: VOICEOVER ────────────────────────────────────────────────────────
 def generate_voice(script, output_path):
     print("[2/5] Generating voiceover...")
-
     if ELEVEN_API_KEY:
         try:
             voice_id = "21m00Tcm4TlvDq8ikWAM"
@@ -102,19 +99,16 @@ def generate_voice(script, output_path):
         print(f"   gTTS error: {e}")
         return False
 
-# ─── STEP 3: FETCH IMAGES ────────────────────────────────────────────────────
+# ─── STEP 3: IMAGES ───────────────────────────────────────────────────────────
 def generate_images(topic, num_images=6):
     print("[3/5] Fetching images...")
     from PIL import Image
     import io
 
     images = []
-    keywords = ["finance", "money", "business", "investment", "success", "growth"]
-
     for i in range(num_images):
         try:
-            kw = keywords[i % len(keywords)]
-            url = f"https://source.unsplash.com/1280x720/?{kw}&sig={i}{random.randint(0,9999)}"
+            url = f"https://picsum.photos/1280/720?random={i}{random.randint(0,9999)}"
             r = requests.get(url, timeout=15)
             if r.status_code == 200:
                 img = Image.open(io.BytesIO(r.content)).convert("RGB")
@@ -137,7 +131,7 @@ def generate_images(topic, num_images=6):
     print(f"   {len(images)} images ready")
     return images
 
-# ─── STEP 4: ASSEMBLE VIDEO ──────────────────────────────────────────────────
+# ─── STEP 4: VIDEO ────────────────────────────────────────────────────────────
 def assemble_video(images, audio_path, topic, output_path):
     print("[4/5] Assembling video...")
     try:
@@ -182,7 +176,7 @@ def assemble_video(images, audio_path, topic, output_path):
         print(f"   Assembly error: {e}")
         return False
 
-# ─── STEP 5: UPLOAD TO YOUTUBE ───────────────────────────────────────────────
+# ─── STEP 5: YOUTUBE ──────────────────────────────────────────────────────────
 def upload_to_youtube(video_path, topic, script):
     print("[5/5] Uploading to YouTube...")
     try:
