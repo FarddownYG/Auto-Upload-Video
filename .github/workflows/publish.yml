@@ -21,7 +21,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install "moviepy==1.0.3" gtts \
+          pip install "moviepy==1.0.3" gtts numpy \
             google-api-python-client \
             google-auth-oauthlib \
             pillow requests
