@@ -54,15 +54,15 @@ def generate_script(topic):
 
     script = call_mistral(f"""Write a punchy YouTube Shorts script in English about: "{topic}"
 - 55 seconds when read aloud (~130 words)
-- VERY energetic, punchy, direct — like a top finance TikToker
-- Start with a SHOCKING hook statement (no "hey guys")
+- VERY energetic, punchy, direct like a top finance TikToker
+- Start with a SHOCKING hook statement, no "hey guys"
 - 3 fast key points with numbers or stats
 - End with: Subscribe for more money tips every day.
 - Return ONLY the script text, nothing else""", max_tokens=300)
 
-    keywords_raw = call_mistral(f"""Give 6 specific English image search keywords for: "{topic}"
-Example for "How to invest $100": stock market, dollar bills, trading chart, Wall Street, investment portfolio, financial growth
-Return ONLY 6 keywords separated by commas, nothing else.""", max_tokens=40)
+    keywords_raw = call_mistral(f"""Give 6 simple English image search keywords for: "{topic}"
+Example: money, finance, investing, stock market, wealth, success
+Return ONLY 6 single keywords separated by commas, nothing else.""", max_tokens=40)
     keywords = [k.strip() for k in keywords_raw.split(",")][:6]
     if len(keywords) < 3:
         keywords = ["finance", "money", "investing", "business", "success", "wealth"]
@@ -103,8 +103,7 @@ def generate_voice(script, output_path):
                 output_path.write_bytes(r.content)
                 print("   ElevenLabs voice OK")
                 return True
-            else:
-                print("   ElevenLabs quota reached, switching to gTTS")
+            print("   ElevenLabs quota reached, switching to gTTS")
         except Exception as e:
             print(f"   ElevenLabs error: {e}")
     try:
@@ -150,38 +149,81 @@ def generate_images(keywords, num_images=8):
     print(f"   {len(images)} images ready")
     return images
 
-# ─── KEN BURNS ZOOM EFFECT ────────────────────────────────────────────────────
+# ─── KEN BURNS ZOOM ───────────────────────────────────────────────────────────
 def make_ken_burns_clip(img_path, duration, zoom_direction="in"):
     from moviepy.editor import VideoClip
     from PIL import Image
-    import numpy as np
 
     img = Image.open(img_path).convert("RGB")
-    img_array = np.array(img)
-    h, w = img_array.shape[:2]
+    img_arr = np.array(img, dtype=np.uint8)
+    h, w = img_arr.shape[:2]
 
     zoom_start = 1.0 if zoom_direction == "in" else 1.08
     zoom_end   = 1.08 if zoom_direction == "in" else 1.0
 
     def make_frame(t):
-        progress = t / duration
+        progress = t / max(duration, 0.001)
         zoom = zoom_start + (zoom_end - zoom_start) * progress
         new_w = int(w / zoom)
         new_h = int(h / zoom)
         x1 = (w - new_w) // 2
         y1 = (h - new_h) // 2
-        cropped = img_array[y1:y1+new_h, x1:x1+new_w]
-        resized = np.array(Image.fromarray(cropped).resize((w, h), Image.LANCZOS))
+        cropped = img_arr[y1:y1+new_h, x1:x1+new_w]
+        resized = np.array(
+            Image.fromarray(cropped).resize((w, h), Image.LANCZOS),
+            dtype=np.uint8
+        )
         return resized
 
     return VideoClip(make_frame, duration=duration).set_fps(FPS)
 
-# ─── STEP 4: VIDEO WITH EFFECTS + SUBTITLES ───────────────────────────────────
+# ─── PIL TEXT ON FRAME (sans ImageMagick pour titre/sous-titres) ──────────────
+def draw_text_on_frame(frame, text, y_center, fontsize=60, color=(255,255,0)):
+    from PIL import Image, ImageDraw, ImageFont
+    img = Image.fromarray(frame.astype(np.uint8))
+    draw = ImageDraw.Draw(img)
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", fontsize)
+    except Exception:
+        font = ImageFont.load_default()
+
+    # Word wrap
+    words = text.split()
+    lines = []
+    current = ""
+    for word in words:
+        test = (current + " " + word).strip()
+        bbox = draw.textbbox((0, 0), test, font=font)
+        if bbox[2] - bbox[0] > VIDEO_W - 80:
+            if current:
+                lines.append(current)
+            current = word
+        else:
+            current = test
+    if current:
+        lines.append(current)
+
+    total_h = len(lines) * (fontsize + 8)
+    y = y_center - total_h // 2
+
+    for line in lines:
+        bbox = draw.textbbox((0, 0), line, font=font)
+        text_w = bbox[2] - bbox[0]
+        x = (VIDEO_W - text_w) // 2
+        # Shadow
+        for dx, dy in [(-3,-3),(3,-3),(-3,3),(3,3),(0,3),(0,-3),(-3,0),(3,0)]:
+            draw.text((x+dx, y+dy), line, font=font, fill=(0,0,0))
+        draw.text((x, y), line, font=font, fill=color)
+        y += fontsize + 8
+
+    return np.array(img)
+
+# ─── STEP 4: VIDEO WITH EFFECTS + PIL SUBTITLES ───────────────────────────────
 def assemble_video(images, audio_path, topic, script, output_path):
     print("[4/5] Assembling video with effects + subtitles...")
     try:
-        from moviepy.editor import (AudioFileClip, TextClip,
-                                    CompositeVideoClip, concatenate_videoclips)
+        from moviepy.editor import (AudioFileClip, VideoClip,
+                                    concatenate_videoclips)
         from moviepy.video.fx.fadein import fadein
         from moviepy.video.fx.fadeout import fadeout
 
@@ -189,87 +231,61 @@ def assemble_video(images, audio_path, topic, script, output_path):
         total_duration = audio.duration
         clip_duration = total_duration / len(images)
 
-        # Ken Burns clips with fade transitions
-        clips = []
-        directions = ["in", "out", "in", "out", "in", "out", "in", "out"]
-        for i, img_path in enumerate(images):
-            direction = directions[i % len(directions)]
-            clip = make_ken_burns_clip(img_path, clip_duration, direction)
-            if i > 0:
-                clip = fadein(clip, 0.3)
-            if i < len(images) - 1:
-                clip = fadeout(clip, 0.3)
-            clips.append(clip)
-
-        base_video = concatenate_videoclips(clips, method="compose")
-
-        # Title — big, bold, top of screen
-        short_title = topic[:45] + "..." if len(topic) > 45 else topic
-        overlay_clips = []
-        try:
-            title = TextClip(
-                short_title.upper(),
-                fontsize=62,
-                color="white",
-                font="DejaVu-Sans-Bold",
-                size=(VIDEO_W - 60, None),
-                method="caption",
-                stroke_color="black",
-                stroke_width=4
-            ).set_duration(min(3.0, total_duration)).set_position(("center", 160))
-            overlay_clips.append(title)
-        except Exception as e:
-            print(f"   Title error: {e}")
-
-        # Progress bar at bottom
-        try:
-            def make_progress_bar(t):
-                from PIL import Image as PILImage, ImageDraw
-                progress = t / total_duration
-                bar_w = int(VIDEO_W * progress)
-                img = PILImage.new("RGBA", (VIDEO_W, 8), (0, 0, 0, 0))
-                draw = ImageDraw.Draw(img)
-                draw.rectangle([0, 0, bar_w, 8], fill=(255, 200, 0, 220))
-                return np.array(img)
-
-            from moviepy.editor import VideoClip
-            bar_clip = VideoClip(make_progress_bar, duration=total_duration, ismask=False)
-            bar_clip = bar_clip.set_position(("center", VIDEO_H - 12))
-            overlay_clips.append(bar_clip)
-        except Exception as e:
-            print(f"   Progress bar error: {e}")
-
-        # Subtitles — word by word, yellow, bottom center
+        # Subtitle chunks — 3 words each
         words = script.split()
         chunk_size = 3
         chunks = [" ".join(words[i:i+chunk_size]) for i in range(0, len(words), chunk_size)]
         chunk_dur = total_duration / len(chunks)
 
-        for i, chunk in enumerate(chunks):
-            start = i * chunk_dur
-            try:
-                sub = TextClip(
-                    chunk,
-                    fontsize=64,
-                    color="yellow",
-                    font="DejaVu-Sans-Bold",
-                    size=(VIDEO_W - 80, None),
-                    method="caption",
-                    stroke_color="black",
-                    stroke_width=4
-                ).set_start(start).set_duration(chunk_dur).set_position(("center", VIDEO_H - 380))
-                overlay_clips.append(sub)
-            except Exception:
-                pass
+        # Ken Burns clips
+        directions = ["in","out","in","out","in","out","in","out"]
+        base_clips = []
+        for i, img_path in enumerate(images):
+            clip = make_ken_burns_clip(img_path, clip_duration, directions[i % len(directions)])
+            if i > 0:
+                clip = fadein(clip, 0.25)
+            if i < len(images) - 1:
+                clip = fadeout(clip, 0.25)
+            base_clips.append(clip)
 
-        print(f"   {len([c for c in overlay_clips if hasattr(c, 'start')])} subtitle clips created")
+        base_video = concatenate_videoclips(base_clips, method="compose")
 
-        final = CompositeVideoClip(
-            [base_video] + overlay_clips,
-            size=(VIDEO_W, VIDEO_H)
-        ).set_audio(audio)
+        # Composite: base + PIL subtitles + progress bar
+        short_title = (topic[:40] + "...") if len(topic) > 40 else topic
 
-        final.write_videofile(
+        def make_final_frame(t):
+            frame = base_video.get_frame(t)
+            frame = frame.copy()
+
+            # Title first 3 seconds
+            if t < 3.0:
+                alpha = min(1.0, (3.0 - t) / 0.5) if t > 2.5 else 1.0
+                frame = draw_text_on_frame(
+                    frame, short_title.upper(),
+                    y_center=220, fontsize=58,
+                    color=(255, 255, 255)
+                )
+
+            # Subtitle
+            chunk_idx = min(int(t / chunk_dur), len(chunks) - 1)
+            frame = draw_text_on_frame(
+                frame, chunks[chunk_idx],
+                y_center=VIDEO_H - 320,
+                fontsize=62,
+                color=(255, 220, 0)
+            )
+
+            # Progress bar
+            progress = t / total_duration
+            bar_w = int(VIDEO_W * progress)
+            frame[VIDEO_H-10:VIDEO_H, :bar_w] = [255, 200, 0]
+
+            return frame
+
+        final_clip = VideoClip(make_final_frame, duration=total_duration).set_fps(FPS)
+        final_clip = final_clip.set_audio(audio)
+
+        final_clip.write_videofile(
             str(output_path),
             fps=FPS,
             codec="libx264",
