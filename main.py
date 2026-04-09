@@ -2,6 +2,7 @@ import os
 import sys
 import random
 import requests
+import numpy as np
 from datetime import datetime
 from pathlib import Path
 
@@ -12,9 +13,9 @@ YT_REFRESH_TOKEN     = os.environ.get("YT_REFRESH_TOKEN", "")
 YT_CLIENT_ID         = os.environ.get("YT_CLIENT_ID", "")
 YT_CLIENT_SECRET_STR = os.environ.get("YT_CLIENT_SECRET_STR", "")
 
-# Format Short vertical
 VIDEO_W = 1080
 VIDEO_H = 1920
+FPS     = 30
 
 OUTPUT_DIR = Path("output")
 OUTPUT_DIR.mkdir(exist_ok=True)
@@ -40,58 +41,39 @@ def call_mistral(prompt, max_tokens=400):
 def pick_topic():
     print("[0/5] Asking AI for best trending topic...")
     topic = call_mistral("""You are a viral YouTube Shorts expert.
-Suggest ONE video topic in English, trending and monetizable.
+Suggest ONE video topic in English, trending and highly monetizable.
 Niche: finance, business, or AI/tech.
-Under 60 characters.
-Return ONLY the topic title, no quotes.""", max_tokens=60)
+Under 55 characters.
+Return ONLY the topic title, no quotes, no punctuation.""", max_tokens=60)
     print(f"   Topic: {topic}")
     return topic
 
 # ─── STEP 1: SCRIPT + KEYWORDS + TOOLS ───────────────────────────────────────
 def generate_script(topic):
     print("[1/5] Generating script + keywords + tools...")
-    result = call_mistral(f"""You are a viral YouTube Shorts scriptwriter.
 
-Write about: "{topic}"
+    script = call_mistral(f"""Write a punchy YouTube Shorts script in English about: "{topic}"
+- 55 seconds when read aloud (~130 words)
+- VERY energetic, punchy, direct — like a top finance TikToker
+- Start with a SHOCKING hook statement (no "hey guys")
+- 3 fast key points with numbers or stats
+- End with: Subscribe for more money tips every day.
+- Return ONLY the script text, nothing else""", max_tokens=300)
 
-Return EXACTLY this format, nothing else:
+    keywords_raw = call_mistral(f"""Give 6 specific English image search keywords for: "{topic}"
+Example for "How to invest $100": stock market, dollar bills, trading chart, Wall Street, investment portfolio, financial growth
+Return ONLY 6 keywords separated by commas, nothing else.""", max_tokens=40)
+    keywords = [k.strip() for k in keywords_raw.split(",")][:6]
+    if len(keywords) < 3:
+        keywords = ["finance", "money", "investing", "business", "success", "wealth"]
 
-SCRIPT:
-[90 second script, ~220 words, energetic and direct, finance/business tone]
-[Hook 10s -> 3 key points 60s -> CTA 20s]
-[Start strong, no "hey guys"]
-[End with: Subscribe for more money tips every day.]
-
-KEYWORDS:
-[5 comma-separated English image search keywords related to the topic]
-
-TOOLS:
-[List any real websites, apps or platforms mentioned in the script, one per line, with URL. If none, write NONE]""", max_tokens=600)
-
-    script = ""
-    keywords = []
-    tools = []
-
-    lines = result.split("\n")
-    section = None
-    for line in lines:
-        line = line.strip()
-        if line.startswith("SCRIPT:"):
-            section = "script"
-        elif line.startswith("KEYWORDS:"):
-            section = "keywords"
-        elif line.startswith("TOOLS:"):
-            section = "tools"
-        elif section == "script" and line:
-            script += line + " "
-        elif section == "keywords" and line:
-            keywords = [k.strip() for k in line.split(",")]
-        elif section == "tools" and line and line != "NONE":
-            tools.append(line)
-
-    script = script.strip()
-    if not keywords:
-        keywords = ["finance", "money", "investing", "business", "success"]
+    tools_raw = call_mistral(f"""List real websites or apps mentioned in this script. If none write NONE.
+Script: {script}
+Return only full URLs starting with http, one per line.""", max_tokens=100)
+    tools = [] if "NONE" in tools_raw.upper() else [
+        t.strip() for t in tools_raw.split("\n")
+        if t.strip().startswith("http")
+    ]
 
     print(f"   Script ready ({len(script)} chars)")
     print(f"   Keywords: {keywords}")
@@ -111,7 +93,7 @@ def generate_voice(script, output_path):
             body = {
                 "text": script,
                 "model_id": "eleven_monolingual_v1",
-                "voice_settings": {"stability": 0.35, "similarity_boost": 0.8}
+                "voice_settings": {"stability": 0.3, "similarity_boost": 0.85}
             }
             r = requests.post(
                 f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
@@ -125,7 +107,6 @@ def generate_voice(script, output_path):
                 print("   ElevenLabs quota reached, switching to gTTS")
         except Exception as e:
             print(f"   ElevenLabs error: {e}")
-
     try:
         from gtts import gTTS
         tts = gTTS(text=script, lang="en", slow=False)
@@ -137,123 +118,173 @@ def generate_voice(script, output_path):
         return False
 
 # ─── STEP 3: IMAGES ───────────────────────────────────────────────────────────
-def generate_images(keywords, num_images=6):
-    print("[3/5] Fetching images...")
+def fetch_image(keyword, index):
     from PIL import Image
     import io
-
-    images = []
-    for i in range(num_images):
-        kw = keywords[i % len(keywords)]
+    for url in [
+        f"https://source.unsplash.com/{VIDEO_W}x{VIDEO_H}/?{keyword}&sig={index}{random.randint(0,9999)}",
+        f"https://picsum.photos/{VIDEO_W}/{VIDEO_H}?random={index}{random.randint(0,9999)}"
+    ]:
         try:
-            # Use keyword-based search via Unsplash source (portrait format)
-            url = f"https://source.unsplash.com/{VIDEO_W}x{VIDEO_H}/?{kw}&sig={i}{random.randint(0,9999)}"
             r = requests.get(url, timeout=15)
             if r.status_code == 200:
                 img = Image.open(io.BytesIO(r.content)).convert("RGB")
-                img = img.resize((VIDEO_W, VIDEO_H))
-            else:
-                raise Exception(f"HTTP {r.status_code}")
+                return img.resize((VIDEO_W, VIDEO_H), Image.LANCZOS)
         except Exception:
-            try:
-                url = f"https://picsum.photos/{VIDEO_W}/{VIDEO_H}?random={i}{random.randint(0,9999)}"
-                r = requests.get(url, timeout=15)
-                img = Image.open(io.BytesIO(r.content)).convert("RGB")
-                img = img.resize((VIDEO_W, VIDEO_H))
-            except Exception:
-                colors = ["#1a1a2e", "#16213e", "#0f3460", "#1b262c", "#0d1117", "#161b22"]
-                img = Image.new("RGB", (VIDEO_W, VIDEO_H), colors[i % len(colors)])
+            pass
+    colors = ["#0d1117", "#1a1a2e", "#16213e", "#0f3460", "#1b262c", "#161b22"]
+    return Image.new("RGB", (VIDEO_W, VIDEO_H), colors[index % len(colors)])
 
-        # Dark overlay
-        overlay = Image.new("RGBA", img.size, (0, 0, 0, 140))
+def generate_images(keywords, num_images=8):
+    print("[3/5] Fetching images...")
+    from PIL import Image
+    images = []
+    for i in range(num_images):
+        kw = keywords[i % len(keywords)]
+        img = fetch_image(kw, i)
+        overlay = Image.new("RGBA", img.size, (0, 0, 0, 130))
         img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
         path = OUTPUT_DIR / f"img_{i}.jpg"
-        img.save(str(path), "JPEG")
+        img.save(str(path), "JPEG", quality=95)
         images.append(str(path))
-
     print(f"   {len(images)} images ready")
     return images
 
-# ─── STEP 4: VIDEO WITH SUBTITLES ─────────────────────────────────────────────
+# ─── KEN BURNS ZOOM EFFECT ────────────────────────────────────────────────────
+def make_ken_burns_clip(img_path, duration, zoom_direction="in"):
+    from moviepy.editor import VideoClip
+    from PIL import Image
+    import numpy as np
+
+    img = Image.open(img_path).convert("RGB")
+    img_array = np.array(img)
+    h, w = img_array.shape[:2]
+
+    zoom_start = 1.0 if zoom_direction == "in" else 1.08
+    zoom_end   = 1.08 if zoom_direction == "in" else 1.0
+
+    def make_frame(t):
+        progress = t / duration
+        zoom = zoom_start + (zoom_end - zoom_start) * progress
+        new_w = int(w / zoom)
+        new_h = int(h / zoom)
+        x1 = (w - new_w) // 2
+        y1 = (h - new_h) // 2
+        cropped = img_array[y1:y1+new_h, x1:x1+new_w]
+        resized = np.array(Image.fromarray(cropped).resize((w, h), Image.LANCZOS))
+        return resized
+
+    return VideoClip(make_frame, duration=duration).set_fps(FPS)
+
+# ─── STEP 4: VIDEO WITH EFFECTS + SUBTITLES ───────────────────────────────────
 def assemble_video(images, audio_path, topic, script, output_path):
-    print("[4/5] Assembling video with subtitles...")
+    print("[4/5] Assembling video with effects + subtitles...")
     try:
-        from moviepy.editor import (ImageClip, AudioFileClip,
-                                    concatenate_videoclips, TextClip,
-                                    CompositeVideoClip)
+        from moviepy.editor import (AudioFileClip, TextClip,
+                                    CompositeVideoClip, concatenate_videoclips)
+        from moviepy.video.fx.fadein import fadein
+        from moviepy.video.fx.fadeout import fadeout
 
         audio = AudioFileClip(str(audio_path))
         total_duration = audio.duration
         clip_duration = total_duration / len(images)
 
-        # Split script into subtitle chunks (~5 words each)
-        words = script.split()
-        chunk_size = 5
-        chunks = [" ".join(words[i:i+chunk_size]) for i in range(0, len(words), chunk_size)]
-        chunk_duration = total_duration / len(chunks)
-
+        # Ken Burns clips with fade transitions
         clips = []
+        directions = ["in", "out", "in", "out", "in", "out", "in", "out"]
         for i, img_path in enumerate(images):
-            img_clip = ImageClip(img_path, duration=clip_duration)
+            direction = directions[i % len(directions)]
+            clip = make_ken_burns_clip(img_path, clip_duration, direction)
+            if i > 0:
+                clip = fadein(clip, 0.3)
+            if i < len(images) - 1:
+                clip = fadeout(clip, 0.3)
+            clips.append(clip)
 
-            # Title on first clip
-            if i == 0:
-                short_title = topic[:40] + "..." if len(topic) > 40 else topic
-                try:
-                    title_txt = TextClip(
-                        short_title.upper(),
-                        fontsize=60, color="white",
-                        font="DejaVu-Sans-Bold",
-                        size=(VIDEO_W - 80, None),
-                        method="caption",
-                        stroke_color="black",
-                        stroke_width=2
-                    ).set_duration(clip_duration).set_position(("center", 200))
-                    img_clip = CompositeVideoClip([img_clip, title_txt])
-                except Exception:
-                    pass
+        base_video = concatenate_videoclips(clips, method="compose")
 
-            clips.append(img_clip)
+        # Title — big, bold, top of screen
+        short_title = topic[:45] + "..." if len(topic) > 45 else topic
+        overlay_clips = []
+        try:
+            title = TextClip(
+                short_title.upper(),
+                fontsize=62,
+                color="white",
+                font="DejaVu-Sans-Bold",
+                size=(VIDEO_W - 60, None),
+                method="caption",
+                stroke_color="black",
+                stroke_width=4
+            ).set_duration(min(3.0, total_duration)).set_position(("center", 160))
+            overlay_clips.append(title)
+        except Exception as e:
+            print(f"   Title error: {e}")
 
-        # Build subtitle clips
-        subtitle_clips = []
+        # Progress bar at bottom
+        try:
+            def make_progress_bar(t):
+                from PIL import Image as PILImage, ImageDraw
+                progress = t / total_duration
+                bar_w = int(VIDEO_W * progress)
+                img = PILImage.new("RGBA", (VIDEO_W, 8), (0, 0, 0, 0))
+                draw = ImageDraw.Draw(img)
+                draw.rectangle([0, 0, bar_w, 8], fill=(255, 200, 0, 220))
+                return np.array(img)
+
+            from moviepy.editor import VideoClip
+            bar_clip = VideoClip(make_progress_bar, duration=total_duration, ismask=False)
+            bar_clip = bar_clip.set_position(("center", VIDEO_H - 12))
+            overlay_clips.append(bar_clip)
+        except Exception as e:
+            print(f"   Progress bar error: {e}")
+
+        # Subtitles — word by word, yellow, bottom center
+        words = script.split()
+        chunk_size = 3
+        chunks = [" ".join(words[i:i+chunk_size]) for i in range(0, len(words), chunk_size)]
+        chunk_dur = total_duration / len(chunks)
+
         for i, chunk in enumerate(chunks):
-            start = i * chunk_duration
+            start = i * chunk_dur
             try:
                 sub = TextClip(
                     chunk,
-                    fontsize=52,
+                    fontsize=64,
                     color="yellow",
                     font="DejaVu-Sans-Bold",
                     size=(VIDEO_W - 80, None),
                     method="caption",
                     stroke_color="black",
-                    stroke_width=2
-                ).set_start(start).set_duration(chunk_duration).set_position(("center", VIDEO_H - 350))
-                subtitle_clips.append(sub)
+                    stroke_width=4
+                ).set_start(start).set_duration(chunk_dur).set_position(("center", VIDEO_H - 380))
+                overlay_clips.append(sub)
             except Exception:
                 pass
 
-        base_video = concatenate_videoclips(clips, method="compose")
-        if subtitle_clips:
-            final = CompositeVideoClip([base_video] + subtitle_clips)
-        else:
-            final = base_video
+        print(f"   {len([c for c in overlay_clips if hasattr(c, 'start')])} subtitle clips created")
 
-        final = final.set_audio(audio)
+        final = CompositeVideoClip(
+            [base_video] + overlay_clips,
+            size=(VIDEO_W, VIDEO_H)
+        ).set_audio(audio)
+
         final.write_videofile(
             str(output_path),
-            fps=24,
+            fps=FPS,
             codec="libx264",
             audio_codec="aac",
             temp_audiofile=str(OUTPUT_DIR / "temp_audio.m4a"),
             remove_temp=True,
-            logger=None
+            logger=None,
+            preset="fast"
         )
         print(f"   Video ready: {output_path}")
         return True
     except Exception as e:
         print(f"   Assembly error: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 # ─── STEP 5: YOUTUBE ──────────────────────────────────────────────────────────
@@ -272,10 +303,8 @@ def upload_to_youtube(video_path, topic, script, tools):
             token_uri="https://oauth2.googleapis.com/token"
         )
 
-        youtube = googleapiclient.discovery.build(
-            "youtube", "v3", credentials=creds)
+        youtube = googleapiclient.discovery.build("youtube", "v3", credentials=creds)
 
-        # Build description with tools links
         tools_section = ""
         if tools:
             tools_section = "\n\nTools & Resources mentioned:\n" + "\n".join(tools)
@@ -304,16 +333,10 @@ def upload_to_youtube(video_path, topic, script, tools):
         }
 
         media = googleapiclient.http.MediaFileUpload(
-            str(video_path),
-            mimetype="video/mp4",
-            resumable=True
-        )
+            str(video_path), mimetype="video/mp4", resumable=True)
 
         request = youtube.videos().insert(
-            part="snippet,status",
-            body=body,
-            media_body=media
-        )
+            part="snippet,status", body=body, media_body=media)
 
         response = None
         while response is None:
@@ -334,10 +357,14 @@ def main():
     print(f"YouTube Auto Publisher - {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     print(f"{'='*50}\n")
 
-    topic               = pick_topic()
+    topic                   = pick_topic()
     script, keywords, tools = generate_script(topic)
-    audio_path          = OUTPUT_DIR / "voiceover.mp3"
-    video_path          = OUTPUT_DIR / "final_video.mp4"
+    audio_path              = OUTPUT_DIR / "voiceover.mp3"
+    video_path              = OUTPUT_DIR / "final_video.mp4"
+
+    if not script:
+        print("ERROR: Empty script")
+        sys.exit(1)
 
     if not generate_voice(script, audio_path):
         print("ERROR: Voice generation failed")
